@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cube Solver</title>
+<style>
+:root{color-scheme:dark light}
+body{font:15px system-ui,sans-serif;margin:0;background:#15171c;color:#eee}
+main{max-width:640px;margin:auto;padding:12px}
+h1{font-size:20px;margin:4px 0 10px}
+section{margin-bottom:16px}
+button,.btn{font:inherit;display:inline-block;padding:9px 14px;border:0;border-radius:8px;background:#3b82f6;color:#fff;margin:4px 4px 4px 0}
+.g{background:#3a3f4b}.on{outline:2px solid #fff}
+canvas{max-width:100%;touch-action:none;background:#222;border-radius:8px;display:block}
+.rel{position:relative}.rel video{width:100%;border-radius:8px;display:block}
+.rel canvas{position:absolute;left:0;top:0;width:100%;height:100%;background:none}
+#tabs button{padding:8px 10px}
+#grid{display:grid;grid-template-columns:repeat(12,1fr);gap:2px;margin:8px 0}
+#grid div{aspect-ratio:1;border-radius:3px;border:1px solid #0006}
+.sw{display:inline-block;width:14px;height:14px;border-radius:3px;vertical-align:-2px;border:1px solid #888;margin:0 2px}
+#chips span{display:inline-block;padding:3px 7px;margin:2px;border-radius:6px;background:#3a3f4b;cursor:pointer}
+#chips span.cur{background:#3b82f6}
+#msg{color:#fbbf24;min-height:1.2em}
+.big{font-size:18px;margin:8px 0}
+</style></head><body><main>
+<h1>Cube Solver</h1>
+
+<section id="a">
+ <p><b>Setup:</b> choose any face as <b>Front</b> and an adjacent face as <b>Top</b>, and keep that orientation. Take six straight-on photos, one per face.</p>
+ <div id="tabs"></div>
+ <p id="hint"></p>
+ <button id="cam">📷 Live camera</button>
+ <label class="btn">📷 Camera app<input type="file" id="f2" accept="image/*" capture="environment" hidden></label>
+ <label class="btn g">Choose file<input type="file" id="f" accept="image/*" hidden></label>
+ <div id="live" hidden>
+  <div class="rel"><video id="vid" playsinline muted></video><canvas id="gd"></canvas></div>
+  <button id="snap">Capture</button><button id="stop" class="g">Cancel</button>
+ </div>
+ <canvas id="cv" width="300" height="200"></canvas>
+ <small>Drag the pink corners onto the corners of the face (follows perspective). Drag elsewhere to move the whole grid. Yellow circles should sit on the stickers.</small><br>
+ <button id="rot" class="g">⟳ Rotate grid</button>
+ <button id="read">Read colours</button>
+ <button id="demo" class="g">Try random scramble</button>
+</section>
+
+<section id="b" hidden>
+ <p>Check this against your cube (tap a sticker to change its colour; centres are fixed).</p>
+ <div id="grid"></div><div id="counts"></div>
+ <button id="solve">Solve</button><button id="back" class="g">Back</button>
+</section>
+
+<section id="c" hidden>
+ <div id="orient"></div>
+ <canvas id="net" width="264" height="198"></canvas>
+ <div class="big" id="desc"></div>
+ <button id="prev" class="g">◀ Prev</button><button id="next">Next ▶</button>
+ <div id="chips"></div>
+ <button id="again" class="g">Start over</button>
+</section>
+<p id="msg"></p>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/cubejs@1.3.2/lib/cube.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/cubejs@1.3.2/lib/solve.js"></script>
+<script>
+const L='URFDLB',$=id=>document.getElementById(id),OFF=[[3,0],[6,3],[3,3],[3,6],[0,3],[9,3]];
+const NAME={U:'top',R:'right',F:'front',D:'bottom',L:'left',B:'back'};
+const ORDER=['L','F','U','D','R','B'];
+const HINT=[
+ 'Left face: start with your chosen Front facing you and Top up, then turn the cube so the left-hand face points at you (top stays up).',
+ 'Front face: turn the cube back so the Front faces you again (top up).',
+ 'Top face: from the Front position, tilt the cube so the top faces you (front edge at the bottom of the photo).',
+ 'Bottom face: from the Front position, tilt the cube so the bottom faces you (front edge at the top of the photo).',
+ 'Right face: back in the Front position, turn the cube so the right-hand face points at you (top up).',
+ 'Back face: turn another quarter in the same direction (the face on your right comes to face you).'];
+const NM=['Left','Front','Top','Bottom','Right','Back'];
+let bases=ORDER.map(()=>document.createElement('canvas')),has=ORDER.map(()=>0),Q=ORDER.map(()=>null),
+ cur=0,S=[],cols=[],st=[],mv=[],k=0,stream=null,gs;
+const cv=$('cv'),cx=cv.getContext('2d');
+
+function sq(w,h){const s=Math.min(w,h)*.35,x=w/2,y=h/2;return[[x-s,y-s],[x+s,y-s],[x+s,y+s],[x-s,y+s]]}
+// unit square -> quad (projective), corners TL,TR,BR,BL
+function H(Q){const[[x0,y0],[x1,y1],[x2,y2],[x3,y3]]=Q,dx1=x1-x2,dx2=x3-x2,dx3=x0-x1+x2-x3,dy1=y1-y2,dy2=y3-y2,dy3=y0-y1+y2-y3;
+ let g=0,h=0;if(Math.abs(dx3)+Math.abs(dy3)>1e-9){const d=dx1*dy2-dx2*dy1;g=(dx3*dy2-dx2*dy3)/d;h=(dx1*dy3-dx3*dy1)/d}
+ const a=x1-x0+g*x1,b=x3-x0+h*x3,d2=y1-y0+g*y1,e=y3-y0+h*y3;
+ return(u,v)=>{const w=g*u+h*v+1;return[(a*u+b*v+x0)/w,(d2*u+e*v+y0)/w]}}
+const ctr=j=>[(j%3+.5)/3,((j/3|0)+.5)/3];
+function ov(c,Q,hr){const m=H(Q);c.lineWidth=Math.max(2,c.canvas.width/300);c.strokeStyle='#fff';
+ c.beginPath();[[0,0],[1,0],[1,1],[0,1]].forEach(([u,v],i)=>c[i?'lineTo':'moveTo'](...m(u,v)));c.closePath();
+ for(let t=1;t<3;t++){c.moveTo(...m(t/3,0));c.lineTo(...m(t/3,1));c.moveTo(...m(0,t/3));c.lineTo(...m(1,t/3))}c.stroke();
+ const r=Math.hypot(Q[1][0]-Q[0][0],Q[1][1]-Q[0][1])/3*.18;c.strokeStyle='#facc15';
+ for(let j=0;j<9;j++){const[x,y]=m(...ctr(j));c.beginPath();c.arc(x,y,r,0,7);c.stroke()}
+ if(hr){c.fillStyle='#f43f5eaa';Q.forEach(([x,y])=>{c.beginPath();c.arc(x,y,hr,0,7);c.fill()})}}
+function draw(){const b=bases[cur];cv.width=b.width||300;cv.height=b.height||200;
+ if(has[cur]){cx.drawImage(b,0,0);ov(cx,Q[cur],Math.max(10,cv.width/45))}else{cx.fillStyle='#222';cx.fillRect(0,0,cv.width,cv.height)}}
+function tab(i){cur=i;$('tabs').innerHTML='';
+ NM.forEach((n,j)=>{const b=document.createElement('button');b.className=j==i?'':'g';b.textContent=(has[j]?'✓ ':'')+n;b.onclick=()=>tab(j);if(j==i)b.classList.add('on');$('tabs').append(b)});
+ $('hint').textContent=`${i+1}/6 — ${HINT[i]}`;draw()}
+function put(src,w,h){const b=bases[cur];b.width=w;b.height=h;b.getContext('2d').drawImage(src,0,0,w,h);has[cur]=1;Q[cur]=sq(w,h);
+ tab(Math.min(cur+1,5));if(!has[cur])draw()}
+$('f').onchange=$('f2').onchange=async e=>{const f=e.target.files[0];if(!f)return;
+ const im=await createImageBitmap(f),w=Math.min(1000,im.width);put(im,w,im.height*w/im.width);e.target.value=''};
+
+let drag=null;
+function pos(e){const r=cv.getBoundingClientRect(),s=cv.width/r.width;return[(e.clientX-r.left)*s,(e.clientY-r.top)*s]}
+cv.onpointerdown=e=>{if(!has[cur])return;const p=pos(e),r=cv.width/16;let bi=-1,bd=r*r;
+ Q[cur].forEach((q,i)=>{const d=(q[0]-p[0])**2+(q[1]-p[1])**2;if(d<bd){bd=d;bi=i}});drag={i:bi,p};cv.setPointerCapture(e.pointerId)};
+cv.onpointermove=e=>{if(!drag)return;const p=pos(e),dx=p[0]-drag.p[0],dy=p[1]-drag.p[1];
+ (drag.i<0?Q[cur]:[Q[cur][drag.i]]).forEach(q=>{q[0]+=dx;q[1]+=dy});drag.p=p;draw()};
+cv.onpointerup=()=>drag=null;
+$('rot').onclick=()=>{if(has[cur]){Q[cur].push(Q[cur].shift());draw()}};
+
+// live camera
+function stopCam(){stream&&stream.getTracks().forEach(t=>t.stop());stream=null;$('live').hidden=true}
+$('cam').onclick=async()=>{
+ if(!navigator.mediaDevices||!window.isSecureContext)return msg('Live camera needs HTTPS in a normal browser. Use Camera app or Choose file instead.');
+ try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1280}},audio:false})}
+ catch(e){return msg('Camera unavailable ('+e.name+'). Use Camera app or Choose file.')}
+ const v=$('vid'),g=$('gd');v.srcObject=stream;await v.play();msg('');$('live').hidden=false;
+ const w=g.width=v.videoWidth,h=g.height=v.videoHeight;gs=sq(w,h);ov(g.getContext('2d'),gs,0)};
+$('snap').onclick=()=>{const v=$('vid');put(v,v.videoWidth,v.videoHeight);stopCam()};
+$('stop').onclick=stopCam;
+
+function lab(r,g,b){[r,g,b]=[r,g,b].map(v=>{v/=255;return v>.04045?((v+.055)/1.055)**2.4:v/12.92});
+ let x=(r*.4124+g*.3576+b*.1805)/.95047,y=r*.2126+g*.7152+b*.0722,z=(r*.0193+g*.1192+b*.9505)/1.08883;
+ [x,y,z]=[x,y,z].map(t=>t>.008856?Math.cbrt(t):7.787*t+16/116);return[116*y-16,500*(x-y),200*(y-z)]}
+// colour classes seeded by the six centres; lightness down-weighted for shadows; each colour gets exactly 9 stickers
+function cls(smp){const lb=smp.map(s=>{const l=lab(...s);return[l[0]*.35,l[1],l[2]]}),C=[4,13,22,31,40,49];
+ let refs=C.map(i=>lb[i]),as;
+ for(let it=0;it<3;it++){const cnt=Array(6).fill(1);as=Array(54).fill(-1);C.forEach((c,i)=>as[c]=i);
+  const pr=[];lb.forEach((v,i)=>{if(as[i]<0)refs.forEach((r,c)=>pr.push([(v[0]-r[0])**2+(v[1]-r[1])**2+(v[2]-r[2])**2,i,c]))});
+  pr.sort((a,b)=>a[0]-b[0]);for(const[,i,c]of pr)if(as[i]<0&&cnt[c]<9){as[i]=c;cnt[c]++}
+  refs=refs.map((_,c)=>{const m=lb.filter((_,j)=>as[j]==c);return[0,1,2].map(q=>m.reduce((s,v)=>s+v[q],0)/m.length)})}
+ return as}
+
+$('read').onclick=()=>{
+ if(!has.every(x=>x))return msg('Add all six photos first.');
+ const smp=Array(54);
+ ORDER.forEach((l,p)=>{const f=L.indexOf(l),g=bases[p].getContext('2d'),m=H(Q[p]),q=Q[p],
+  r=Math.max(2,Math.hypot(q[1][0]-q[0][0],q[1][1]-q[0][1])/3*.12|0);
+  for(let j=0;j<9;j++){const[x,y]=m(...ctr(j)),dt=g.getImageData(x-r|0,y-r|0,2*r,2*r).data,n=dt.length/4,t=[0,0,0];
+   for(let i=0;i<dt.length;i+=4){t[0]+=dt[i];t[1]+=dt[i+1];t[2]+=dt[i+2]}smp[f*9+j]=t.map(v=>v/n)}});
+ const as=cls(smp);S=as.map(i=>L[i]);
+ cols=[0,1,2,3,4,5].map(c=>{const m=smp.filter((_,j)=>as[j]==c);return`rgb(${[0,1,2].map(q=>Math.round(m.reduce((s,v)=>s+v[q],0)/m.length))})`});
+ edit()};
+$('demo').onclick=()=>{cols=['#fff','#d22','#2a2','#ee2','#f80','#26d'];S=Cube.random().asString().split('');edit()};
+
+function edit(){msg('');$('a').hidden=$('c').hidden=true;$('b').hidden=false;
+ const g=$('grid');g.innerHTML='';
+ S.forEach((l,i)=>{const f=i/9|0,j=i%9,d=document.createElement('div');
+  d.style.cssText=`grid-column:${OFF[f][0]+j%3+1};grid-row:${OFF[f][1]+(j/3|0)+1};background:${cols[L.indexOf(l)]}`;
+  d.onclick=()=>{if(j!=4){S[i]=L[(L.indexOf(l)+1)%6];edit()}};g.append(d)});
+ $('counts').innerHTML=[...L].map((c,i)=>`<span class="sw" style="background:${cols[i]}"></span>${S.filter(x=>x==c).length}`).join(' ')+' (each must be 9)'}
+$('back').onclick=()=>{$('b').hidden=true;$('a').hidden=false;draw()};
+
+$('solve').onclick=()=>{
+ if([...L].some(c=>S.filter(x=>x==c).length!=9))return msg('Each colour must appear exactly 9 times.');
+ msg('Solving…');
+ setTimeout(()=>{try{
+  const sol=Cube.fromString(S.join('')).solve();
+  if(sol==null)throw 0;
+  mv=sol.trim()?sol.trim().split(/\s+/):[];st=[S.join('')];
+  for(const m of mv){const c=Cube.fromString(st[st.length-1]);c.move(m);st.push(c.asString())}
+  k=0;msg('');$('b').hidden=true;$('c').hidden=false;
+  const sw=i=>`<span class="sw" style="background:${cols[i]}"></span>`;
+  $('orient').innerHTML=`Hold the cube with the ${sw(0)} centre on top and the ${sw(2)} centre facing you (your starting position). “Clockwise” means as you look straight at that face. ${mv.length} moves.`;
+  $('chips').innerHTML='';mv.forEach((m,i)=>{const s=document.createElement('span');s.textContent=m;s.onclick=()=>{k=i;show()};$('chips').append(s)});
+  show()}catch(e){msg('This colour layout is not a valid cube — check the stickers against your cube.')}},50)};
+
+function show(){
+ const c=$('net').getContext('2d'),s=st[k],m=mv[k],z=22;c.clearRect(0,0,264,198);
+ [...s].forEach((l,i)=>{const f=i/9|0,j=i%9,x=(OFF[f][0]+j%3)*z,y=(OFF[f][1]+(j/3|0))*z;
+  c.fillStyle=cols[L.indexOf(l)];c.fillRect(x,y,z,z);c.strokeStyle='#000';c.lineWidth=1;c.strokeRect(x+.5,y+.5,z-1,z-1)});
+ if(m){const f=L.indexOf(m[0]),x=OFF[f][0]*z,y=OFF[f][1]*z;
+  c.strokeStyle='#fff';c.lineWidth=4;c.strokeRect(x+2,y+2,3*z-4,3*z-4);
+  const t=m[1]=="'"?'↺':m[1]=='2'?'↻↻':'↻';c.font='bold 30px sans-serif';c.textAlign='center';c.textBaseline='middle';
+  c.lineWidth=4;c.strokeStyle='#000';c.strokeText(t,x+1.5*z,y+1.5*z);c.fillStyle='#fff';c.fillText(t,x+1.5*z,y+1.5*z)}
+ $('desc').textContent=m?`${k+1}/${mv.length}: ${m} — turn the ${NAME[m[0]]} face ${m[1]=="'"?'counter-clockwise':'clockwise'}${m[1]=='2'?' twice (180°)':' a quarter turn'}`:(mv.length?'Solved! 🎉':'Already solved!');
+ [...$('chips').children].forEach((e,i)=>e.classList.toggle('cur',i==k))}
+$('prev').onclick=()=>{if(k>0){k--;show()}};
+$('next').onclick=()=>{if(k<mv.length){k++;show()}};
+$('again').onclick=()=>{$('c').hidden=true;$('a').hidden=false;draw()};
+function msg(t){$('msg').textContent=t}
+
+tab(0);msg('Preparing solver (a few seconds)…');
+setTimeout(()=>{Cube.initSolver();msg('')},60);
+</script></body></html>
